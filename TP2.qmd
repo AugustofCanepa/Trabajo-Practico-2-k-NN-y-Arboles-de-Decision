@@ -1,0 +1,516 @@
+---
+title: "Trabajo Práctico 2 de Laboratorio de Datos"
+author:
+- Canepa Cervini Augusto
+- Dominguez Leonardo
+- Lamonica Ivo
+format:
+  html:
+    self-contained: true
+editor: source
+---
+
+```{r,echo=FALSE, results="hide",error = FALSE, warning = FALSE,message = FALSE}
+require("ggplot2")
+require("rpart")
+require("rpart.plot")
+require("tidyverse")
+require("class")
+
+load("/cloud/project/tp2.RData")
+```
+
+## Introducción
+
+En este trabajo práctico, nos centraremos en el uso de modelos de regresión y de clasificación en R. Para esto, el TP está dividido en dos partes, una para cada modelo respectivamente: En la primera parte, la de regresión, vamos a construir un modelo que prediga la cantidad de viajes por dia en Ecobicis en funcion de diferentes variables provistas por el dataset "clima_ecobici", mientras que en la segunda parte nos centraremos en un set de datos que contiene noticias reales y falsas con el objetivo de poder clasificarlas.
+
+## Parte 1: Regresión
+
+Como primer paso realizaremos un análisis exploratorio para identificar las variables que tengan la mayor influencia respecto a la cantidad de viajes por dia. Por suerte, ya trabajamos con estos datos y conocemos bien el dataset provisto. Empecemos a describirlo: "clima_ecobici" contiene el dia del año con la cantidad de viajes totales realizados cada día, además de diferente informacion climática como temperatura promedio, nivel de precipitación, velocidad de viento, presión atmosférica, etc.
+
+Por lo visto en el TP1, de antemano, podemos descartar las variables en las que no hemos visto mucha correlatividad respecto a los viajes en Ecobici como fue **la velocidad del viento** y **la presión atmosférica** (de igual forma haremos el análisis exploratorio para ver si esto se mantiene). Por lo tanto, esto nos deja tres variables para trabajar: **la temperatura del día**, **la precipitación** y si es un **día laborable o no**. En el trabajo práctico anterior, pudimos observar que si es un día laborable o no, afecta en mayor medida al uso de Ecobicis, así que por el momento, nuestra hipótesis es que esta variable puede ser importante para realizar las predicciones. Todo esto lo analizaremos y confirmaremos (o refutaremos) a continuación:
+
+En primer lugar, vamos a modificar el conjunto de datos original para incluir información adicional que nos permita realizar un analisis más completo. Añadimos 3 columnas binarias, una de dias que llovió (tomamos una precipitacion mayor a 0mm), otra de dias laborables o no laborables (recopilamos los feriados para tenerlos en cuenta) y, por última, una que combine ambas variables.
+
+```{r}
+#Recopilamos los días que fueron feriados en 2022
+feriados<-as.Date(c("2022-01-01","2022-02-28","2022-03-01","2022-03-24","2022-04-02","2022-04-15","2022-05-01","2022-05-18","2022-05-25","2022-06-17","2022-06-20","2022-07-09","2022-08-15","2022-09-02","2022-10-07","2022-10-10","2022-11-20","2022-11-21","2022-12-08","2022-12-09","2022-12-20","2022-12-25"))
+
+#Verfica los dias feriados y se lo agregamos a una nueva columna
+esFeriado <- function(fechas, feriados) {
+  fechas <- as.Date(fechas)
+  es_feriado <- fechas %in% feriados
+  return(es_feriado)
+}
+
+#Modificamos el dataset
+clima_ecobici = clima_ecobici %>% 
+  
+  #Se agrega si es un dia laborable o no
+  mutate(trabajo = ifelse(esFeriado(clima_ecobici$date,feriados), "DiaNoLaborable", ifelse(as.integer(row.names(clima_ecobici)) %% 7 %in% c(2,1),"DiaNoLaborable","DiaLaborable"))) %>%
+  
+  #Se agrega si hay lluvia o no hay
+  mutate(lluvia = ifelse(prcp>0.0,"llueve","no llueve")) %>%
+  
+  #Se agrega una combinacion de cuando llueve y cuando no
+  mutate(laborable_llueve = case_when(
+    lluvia == "llueve" & trabajo == "DiaNoLaborable" ~ "llueve- fin de semana",
+    lluvia == "llueve" & trabajo == "DiaLaborable" ~ "llueve- dia de trabajo",
+    lluvia == "no llueve" & trabajo == "DiaNoLaborable" ~ "no llueve- fin de semana",
+    lluvia == "no llueve" & trabajo == "DiaLaborable" ~ "no llueve- dia de trabajo",
+  ))
+
+```
+
+Ahora, para elegir las variables más adecuadas para ser las predictoras de nuestro modelo realizaremos diferentes tipos de gráficos observando como varian la cantidad de viajes en función de cada variable.
+
+```{r,error = FALSE, warning = FALSE,message = FALSE}
+#Gráfico de dispersión que relaciona la velocidad del viento con los viajes diarios
+grafico_velocidad <- ggplot(clima_ecobici, aes(x = wspd, y = n)) +
+  geom_point(color = "orange") +
+  geom_smooth(method = "lm", se=F)+
+  labs(y = "Usos diarios de bicicletas",
+       x = "Velocidad del viento (Km/h)",
+       title= "Gráfico de usos diarios de bicicleta en funcion de la velocidad del viento")
+grafico_velocidad
+```
+
+Para empezar, como concluíamos antes, viendo el "Gráfico de usos diarios de bicicleta en función de la velocidad del viento", usando el método lineal, podemos ver que la pendiente es casi horizontal, (muy poco inclinada) esto nos muestra que la velocidad del viento no influye en la cantidad de viajes. Por lo tanto, podemos concluir que la velocidad del viento no es una variable significativa en este modelo.
+
+```{r,error = FALSE, warning = FALSE,message = FALSE}
+# Gráfico de dispersión que relaciona la temperatura promedio con los viajes diarios
+grafico_medio <- ggplot(clima_ecobici, aes(x = tavg, y = n)) +
+  geom_point(color = "green") +
+  geom_smooth() +
+  labs(y = "Usos diarios de bicicletas",
+       x = "Temperatura promedio (°c)",
+       title= "Gráfico de usos diarios de bicicleta en funcion de la temperatura promedio")
+grafico_medio
+```
+
+Luego, para el gráfico de la temperatura elegimos usar la temperatura promedio, porque claramente es como concentrar la información de la máxima y la mínima en el mismo. Viendo el gráfico de la temperatura promedio en función de la cantidad de viajes, vemos que la forma que tiene la curva proporcionada por el geom smooth presenta cierta relación con los viajes realizados.
+
+Si hubiesemos usado el método lineal, habríamos notado que la pendiente está levemente inclinada, un poco más que en la pendiente del grafico anterior. Lo cual nos dice que la temperatura influye un poco más en la cantidad de viajes diarios de EcoBici que la velocidad del viento. No es una influencia muy grande, pero evidentemente tiene mayor que la otra variable.
+
+```{r,error = FALSE, warning = FALSE,message = FALSE}
+# Gráfico de dispersión que relaciona la presion con los viajes diarios
+grafico_presion <- ggplot(clima_ecobici, aes(x = pres, y = n)) +
+  geom_point(color = "yellow") +
+  geom_smooth()+
+  labs(y = "Usos diarios de bicicletas",
+       x = "Presión Atmosférica (hpa)",
+       title= "Gráfico de usos diarios de bicicleta en funcion de la presión atmosférica")
+
+grafico_presion
+```
+
+Para la presión atmosférica, observamos la forma que tiene el modelo de regresión (que nos dio el geom_smooth), este dato también lo usaremos más adelante en la explicación. Y nuevamente, si hubiéramos usado el método lineal, habríamos notado que la pendiente está levemente inclinada, aún un poco más que las anteriores mencionadas.
+
+```{r}
+#Boxplot que relaciona los dia de lluvia con los viajes diarios
+ggplot(clima_ecobici, aes(x = factor(lluvia), y = n)) +
+  geom_boxplot() +
+  labs(x = "Lluvia", y = "Número de usos diarios") +
+  labs(y = "Usos diarios de bicicletas",
+       x = "Llueve / No Llueve",
+       title= "Gráfico de usos diarios de bicicleta en funcion de los dias que llueve")
+```
+
+Después generamos un boxplot para comparar el uso diario de bicicletas en los dias lluviosos y no lluviosos. En el mismo se aprecia una diferencia en recien en los extremos de los mismos, es decir hay una leve tendercia a no usar bicicleta cuando no llueve y menos cantidad cuando llueve. A pesar de esta sutil disparidad, se esperaba que sea un poco más significativa
+
+```{r}
+#Boxplot que relaciona los dias laborables con los viajes diarios
+ggplot(clima_ecobici, aes(x = factor(trabajo), y = n)) +
+  geom_boxplot() +
+  labs(y = "Usos diarios de bicicletas",
+       x = "Dia Laborable/ Dia No Laborable",
+       title= "Gráfico de usos diarios de bicicleta en función de los dias de trabajo")
+```
+
+El boxplot que acabamos de ver, es sobre los días laborables y no laborables, acá podemos visualizar que la disparidad es mucho mayor que en los gráficos anteriores. Esto quiere decir que se registra un uso diario de bicicletas considerablemente mayor los dias laborables respecto a los dias no laborables. Cabe recalcar que, inicialmente, la diferencia era un poco menor debido a ciertos días atipicos de la semana y era porque correspondian a días feriados. Poor lo cual al designarlos como dias no laborables la tendecia se hizo más notoria y refuerza la hipotesis que en los dias no laborables hay un menor uso de bicis respecto a los otros dias.
+
+Ahora, vamos a explorar algunas combinaciones de las variables que tenemos, para sacar conclusiones:
+
+```{r,error = FALSE, warning = FALSE,message = FALSE}
+# Gráfico de dispersión que relaciona la presion con los dias laborables y lluvias con los viajes diarios
+ggplot(clima_ecobici, aes(y = n,
+                          x = tavg,
+                          color= laborable_llueve))+
+  geom_point()+ geom_smooth(se=FALSE) +
+  labs(y = "Usos diarios de bicicletas",
+       x = "Temperatura Promedio (°c)",
+       title= "Combinación de días de Lluvia/NoLluvia y Laborables/NoLaborables")
+```
+
+Lo que encontramos acá es importante: Si observamos bien, los puntos azules y rojos (donde son días laborables) tienden a estar arriba, mientras que los puntos verdes y violetas tienden a estar abajo (dias no laborables). Dicha observación nos sugiere que la lluvia no es un factor que influya de forma significativa a la hora de predecir la cantidad de viajes en EcoBici (también hay que aclarar que no hay muchos días donde llueva en proporción a los días donde si llueve como para tener datos más concluyentes). Por lo tanto, concluímos que la variable binaria de "llueve o no llueve" no nos va a ser útil para hacer la predicción.
+
+Ahora veamos con qué variable acompañar a la Laborable/NoLaborable. Nuestros candidatos por lo visto, son la presión atmosférica y la temperatura promedio.
+
+Para decidir, hacemos estos dos gráficos usando como ejes a las variables mencionadas; y recordando los gráficos individuales que hicimos sobre la presión y la temperatura promedio.
+
+```{r,error = FALSE, warning = FALSE,message = FALSE}
+# Gráfico de dispersión que relaciona la presion y los dias de trabajo con los viajes diarios
+ggplot(clima_ecobici, aes(y = n,
+                          x = pres,
+                          color= trabajo))+
+  geom_point()+ geom_smooth() +
+  labs(y = "Usos diarios de bicicletas",
+       x = "Presion Atmosferica (hpa)",
+       title= "Gráfico de usos diarios de bicicleta en funcion de la presion y dias de trabajo")
+```
+
+```{r,error = FALSE, warning = FALSE,message = FALSE}
+# Gráfico de dispersión que relaciona la temperatura y los dias de trabajo con los viajes diarios
+ggplot(clima_ecobici, aes(y = n,
+                          x = tavg,
+                          color= trabajo))+
+  geom_point()+ geom_smooth() +
+  labs(y = "Usos diarios de bicicletas",
+       x = "Temperatura promedio (°c)",
+       title= "Gráfico de usos diarios de bicicleta en funcion de la temperatura promedio y dias laborables")
+```
+
+Teniendo en cuenta el comportamiento individual de la temperatura promedio y de la presión atmosférica en relación de la cantidad de viajes, podemos observar que el comportamiento de la cuerva de la temperatura promedio se repite con cierta semejanza en los dias laborables y no laborables. Hay una tendencia que cuando las temperaturas están más cerca de un extremo la cantidad de viajes tiende a disminuir. En cambio, con la presión atmosférica no se aprecia un patrón parecido al visto en su gráfico individual.
+
+**Conclusión final sobre el análisis exploratorio**: La variable más importante a utilizar es la de Día Laborable / Día No Laborable; sin esta variable no se podría hacer una predicción efectiva dado que es la más influyente. Respecto a la segunda variable a considerar, la verdad es que no hay mucha diferencia entre usar presión atmosférica y temperatura promedio según modelos de regresión usados provisoriamente. No obstante, decidimos usar la temperatura promedio dado que el grafico visto anteriormente con los días laborables/no laborables sigue la tendencia que seguía el gráfico individual, indicándonos que puede ser útil para realizar la predicción.
+
+Ahora realizaremos el modelo de regresión para poder hacer las predicciones y mostrar su error cuadrático medio y coeficiente de determinación.
+
+```{r}
+#Modelo de regresion lineal del uso diarios de bicis
+modelo_laborable_tavg = lm(n ~ trabajo + tavg, data = clima_ecobici)
+
+#Codigo que dado un modelo, devuelve el error cuadratico medio
+valores_predichos <- predict(modelo_laborable_tavg, clima_ecobici)
+
+MSE <- mean((clima_ecobici$n - valores_predichos)^2)
+MSE
+
+#Codigo que dado un modelo, devuelve el coeficiente de determinación
+R2 <-summary(modelo_laborable_tavg)$r.squared
+R2
+
+```
+
+Evaluamos tanto el MSE como R\^2 dado que son métricas para evaluar la calidad de nuestro modelo.
+
+Nuestro MSE de 3447328 nos informa que esa es la diferencia promedio al cuadrado entre las predicciones reales y los valores reales. O sea, que tan cerca está la linea de regresión respecto a los demás puntos.
+
+Por otro lado, nuestro R cuadrado de 0.7513034 nos dice que la variabilidad de la cantidad de viajes puede ser explicada en un 75.13% por nuestras variables. Es decir, los dias de trabajo y de temperatura promedio influyen dicho porcentaje a la hora de predecir en nuestro modelo, lo cual da a entender que son variables significativas (cuanto mayor cerca del 100% sea, más significativas van a ser)
+
+Por último mostraremos el gráfico usnado nuestro modelo lineal y lo explicaremos.
+
+```{r}
+#Tomo los coeficientes 
+intercepto <- coef(modelo_laborable_tavg)[1]
+variable_binaria <- coef(modelo_laborable_tavg)[2]
+beta_1 <- coef(modelo_laborable_tavg)[3]
+
+
+# Gráfico de dispersión que relaciona la temperatura y los dias de trabajo con los viajes diarios
+ggplot(clima_ecobici, aes(y = n,
+                          x = tavg,
+                          color= trabajo))+
+  geom_point() +
+  labs(y = "Usos diarios de bicicletas",
+       x = "Temperatura promedio (C°)",
+       title= "Gráfico de usos diarios de bicicleta en funcion de la temperatura promedio y dias laborables") +
+  geom_abline(intercept = intercepto, slope = beta_1, color="red") +
+   geom_abline(intercept = intercepto + variable_binaria, slope = beta_1, color="blue")
+```
+
+```{r}
+summary(modelo_laborable_tavg)
+```
+
+Con nuestro modelo, tenemos una ecuación dada por:
+
+Y = B~0~+B~1~X~1~+B~2~X~2~ ;
+
+Cantidad de viajes = 9307 + (-6884.17 x X1) + (55.77 x X2)
+
+El coeficiente X1, nos indica que a temperatura constante (X2) el número esperado de viajes en un dia no laborable seran 6884.17 menos respecto a una dia laborable
+
+El coeficiente X2, nos informa que mateniendo constante el anterior coeficiente, cada vez que aumente en una unidad la temperatura promedio, también aumentará en 55.77 la cantidad de viajes.
+
+# Parte 2: Clasificación
+
+Para la siguiente parte del trabajo, usaremos el dataset denominado "fake_news". Este mismo tiene información de 150 noticias diferentes, las cuales pueden ser clasificadas como reales o "fake", es decir, con el objetivo de propagar desinformación. Este dataset presenta información técnica de dichos artículos, como el título, cantidad de palabras y hasta de la cantidad de sílabas, y el tipo de noticia (real o falsa), y también cuenta con información con respecto al uso de palabras, mostrando los diferentes sentimientos que provocan el uso de distintas palabras, como enojo, miedo, alegría, y palabras con connotaciones positivas y negativas.
+
+Para los fines de este trabajo, nos centraremos en encontrar la manera de predecir si una noticia es verdadera o falsa usando este mismo dataset, y nos centraremos en 3 variables para este fin: la cantidad de palabras en el título, si el título tiene signos de exclamación o no, y el porcentaje estimado de palabras con connotacioón negativa.
+
+Para empezar, aunque ya declaramos con que variables vamos a trabajar, es también importante "convencerse" de que estas son útiles. Una buena manera de realizar esto es haciendo visualizaciones de dichas variables y sus efectos en la categoría de tipo de noticia.
+
+```{r}
+#Una representación posible podria ser ver a traves de un grafico de puntos cuantas noticias son fake y real segun la cantidad de letras que contenga el titulo
+
+noticias_dataset <- fake_news %>%
+  select("title_has_excl","negative","title_words","type")
+
+
+
+
+#Grafico para saber si una noticia es real o falsa respecto a la cantidad de palabras en el titulo
+grafico_letras <- ggplot(data=noticias_dataset,
+                         aes(x= title_words,
+                             y=factor(type),
+                             color=type)) +
+  geom_point() +
+    labs(y = "Noticias falsas/reales",
+       x = "Cantidad de palabras en el título",
+       title= "Gráfico de distinción entre noticias falsas y verdaderas \n según su cantidad de palabras en el título")
+  
+  grafico_letras
+  
+#Grafico para saber si una noticia es real o falsa respecto al porcentaje de palabras negativas en el titulo
+grafico_negatividad <- ggplot(data=noticias_dataset,
+                         aes(x= negative,
+                             y=factor(type),
+                             color=type)) +
+  geom_point() +
+    labs(y = "Noticias falsas/reales",
+       x = "Porcentaje de palabras negativas en el titulo (%)",
+       title= "Gráfico de distinción entre noticias falsas y verdaderas \n según su porcentaje de palabras negativas en el titulo")
+
+
+
+  grafico_negatividad
+  
+  
+#Grafico para saber si una noticia es real o falsa respecto al porcentaje de palabras negativas y la cantidad de palabras en el titulo 
+grafico_letras_titulo <- ggplot(data = noticias_dataset,
+                                aes(x=title_words,
+                                    y=negative,
+                                    color=type))+
+  geom_point() +
+  
+    labs(y = "Cantidad de palabras en el título",
+       x = "Porcentaje de palabras negativas en el titulo",
+       title= "Gráfico de cantidad de palabras en el título según su porcentaje \n  de palabras negativas")
+
+grafico_letras_titulo
+
+
+
+```
+
+En estos 3 gráficos pudimos ver algunos detalles en relación a las distintas variables predictoras y el tipo de noticia, aunque hay que aclarar que no es una diferencia muy grande, al menos en algunos casos.
+
+En el primer gráfico ya sea o por la cantidad de casos con los que contamos, o porque simplemente los datos son así, no se puede ver una correlación entre la variable de cantidad de palabras del título y si son noticias reales o falsas, sólo se puede destacar que en dos casos donde el título se hizo muy largo las noticias fueron falsas. Esto quiere, que al menos individualmente no es una variable significativamente útil.
+
+Con el segundo gráfico sí es más notable la relación, se ve una agrupación de puntos azules en valores de negatividad más bajos, y una agrupación de puntos rojos en valores de negatividad más altos, por lo tanto la "negatividad" de la noticia es un factor influyente para predecir si la noticia es falsa o verdadera.
+
+En el tercer gráfico podemos notar fácilmente que en los extremos superiores hay predominantemente noticias falsas y hay una concentración de noticias reales a medida que baja la variable "negative". Sin embargo, hay muchos casos "excepciones", es decir, muchos puntos rojos cerca de esa concentración de puntos azules por ejemplo.
+
+#Grafico de barras
+
+Desde aquí, aunque no es tan fuerte la relacion como quisiéramos, es posible demarcar que con las variables predictoras que mencionamos existe, y a lo que apuntaremos será encontrar esta relación para poder predecir qué noticias son de qué tipo con solo mirar las variables independientes. Sin embargo, la visualización se haría mucho más útil si se realizara en un solo gráfico:
+
+```{r}
+
+#Separo en 4 casos,
+#Si son reales o fakes y tiene exclamacion, y los que no
+
+noticias_dataset <- noticias_dataset %>%
+  mutate(combinacion = case_when (
+    type == "fake" & title_has_excl == "FALSE" ~ "Falso sin signos",
+    type == "real" & title_has_excl == "FALSE" ~ "Real sin signos",
+    type == "fake" & title_has_excl == "TRUE" ~ "Falso con signos",
+    type == "real" & title_has_excl == "TRUE" ~ "Real con signos",
+  ))  %>%
+  drop_na()
+
+
+
+grafico_final <- ggplot(data=noticias_dataset,
+                        aes(x=title_words,
+                            y=negative,
+                            color=combinacion)) +
+      labs(y = "Porcentaje de palabras negativas en el titulo",
+       x = "Cantidad de palabras en el título",
+       title= "Gráfico de distinción entre noticias falsas y verdaderas \n según las tres variables") +
+
+  geom_point()
+
+grafico_final
+  
+```
+
+En este gráfico, se pueden visualizar el efecto de las tres variables en acción al mismo tiempo.
+
+Ahora, con las visualizaciones ya hechas, nos podemos imaginar la relación que pueden tener las 3 variables mencionadas con el tipo de noticia. En la siguiente parte nos centraremos en encontrar, explicar y visualizar esta relación, y para este fin vamos a desarrollar dos modelos: uno usando árboles de decisión y otro usando K-NN (o k vecinos más cercanos)
+
+Empezaremos con el árbol de decisión, y para este fin dividiremos el dataset que estabamos usando en 2: uno de entrenamiento, con 80% de los casos, y otro de prueba, con el restante 20%. Y vemos, cual es el promedio de precisión de este modelo
+
+De más está aclarar que los casos elegidos fueron hechos aleatoriamente.
+
+```{r}
+#Función que dado un el 80% y 20% de un dataset, crea un arbol de decisión y deuelve la precision del mismo
+
+promedio_accuracy <- function(entrenamiento, testeo){
+  #Modelo de clasificación 
+  fit <- rpart(type ~ title_words +title_has_excl + negative, data =    entrenamiento_data)
+
+  #"Se predice el peso"
+  fit$pred <- predict(fit, entrenamiento_data, type="class")
+  
+  #"Me guardo el accuracy del entrenamiento"
+  type_accu_entrenamiento <-  mean(entrenamiento_data$type == fit$pred)
+  
+  
+  #"Se predice el peso pero con los testeos"
+  fit$pred_testeos <- predict(fit,testeo_data, type="class")
+  
+  #"Me guardo el accuracy de los testeos"
+  type_accu_testeos <-  mean(testeo_data$type == fit$pred_testeos)
+  
+  
+   return(list(entrenamiento = type_accu_entrenamiento, testeo = type_accu_testeos))
+}
+```
+
+```{r}
+#Vector que guarda los porcentajes de precision de cada arbol de clasificación
+vector_precision_entrenamiento <- c()
+vector_precision_testeo <- c()
+
+#Codigo que itera 100 veces el arbol de decision respecto 
+i= 0
+while(i < 100){
+#Se define semilla para que la aleatoriedad del inicio sea igual en todas las demas
+set.seed(i)
+#Se almacenan los indices del 80% (0,8 del total) de todos los pinguinos (de la 1era a la ultima fila) del dataset de palmerpenguins
+sample_indices <- sample(1:nrow(noticias_dataset), 0.8 * nrow(noticias_dataset))
+
+
+#Se divide el data set en 2.
+#1 con el 80% de los números tomados
+entrenamiento_data <- noticias_dataset[sample_indices,]
+#El otro con el 20% Restante (Osea todos los que no fueron tomados en el sample_indices)
+testeo_data <- noticias_dataset[-sample_indices,]
+
+precision <- promedio_accuracy(entrenamiento_data, testeo_data)
+
+  vector_precision_entrenamiento <- c(vector_precision_entrenamiento, precision$entrenamiento)
+  vector_precision_testeo <- c(vector_precision_testeo, precision$testeo)
+i = i + 1
+}
+
+#Promedio del accuracy del entrenamiento
+mean(vector_precision_entrenamiento)
+#Promedio del accuracy del testeo
+mean(vector_precision_testeo)
+
+```
+
+Vemos que en promedio el accuracy de los arboles de decisión respecto al dataset de entrenamiento es de un 0.7578 y que respecto a los testeos es del 0.6393. Esto quiere decir que clasifica un 75,78% de las muestras según el conjuntos de datos con el que se entrenó, y 63,93% respecto a lo que puede predecir.
+
+Con estos porcentajes podemos sugerir que el modelo aprendió los detalle de su conjunto de forma correcta y que se puede generalizar para nuevos datos relativamente bien.
+
+Aca realizamos una matriz de confusión tomando en cuenta el ultimo entrenamiento y verificamos cuanto porcentaje nos otorga.
+
+```{r}
+#Se almacenan los indices del 80% (0,8 del total) de todos los pinguinos (de la 1era a la ultima fila) del dataset de palmerpenguins
+sample_indices <- sample(1:nrow(noticias_dataset), 0.8 * nrow(noticias_dataset))
+
+
+#Se divide el data set en 2.
+#1 con el 80% de los números tomados
+entrenamiento_data <- noticias_dataset[sample_indices,]
+#El otro con el 20% Restante (Osea todos los que no fueron tomados en el sample_indices)
+testeo_data <- noticias_dataset[-sample_indices,]
+
+#Modelo de clasificación 
+  fit <- rpart(type ~ title_words +title_has_excl + negative, data =    entrenamiento_data)
+
+#"Se predice el peso"
+  fit$pred_testeos <- predict(fit, testeo_data, type="class")
+  
+
+confusion_matrix_arbol <- table(Predicción = fit$pred_testeos, Real = testeo_data$type)
+confusion_matrix_arbol
+```
+
+```{r}
+rpart.plot(fit)
+```
+
+Aca se puede visualizar un ejemplo del último modelo entrenado del árbol de clasificación, donde clasifica las noticias en función de las 3 variables.
+
+Ahora, pasaremos al uso de k-NN para poder predecir los mismos datos con otro método para el modelo de clasificación:
+
+En primer lugar, nos interesaria conocer cual es el mejor k con el fin de tener la mejor precisión posible. Para ello, probamos con diferentes candidatos de k (serían numeros impares menores a 150 ya que son 150 casos en el dataset) y mayores 1.
+
+```{r}
+#Funcion que devuelve los promedio del la precisión con cada k
+generador <- function(x){
+  mejor_k = c()
+  i=3
+  while(i<100){
+    t=1
+    k_actual=c()
+    while(t<1001){  
+      v <- sample(1:nrow(noticias_dataset),0.8*nrow(noticias_dataset))
+      entrenamiento <- noticias_dataset[v,]
+      prueba <- noticias_dataset[-v,]
+      vecinos <- knn(entrenamiento[,c("title_words","title_has_excl","negative")], prueba[,c("title_words","title_has_excl","negative")], entrenamiento$type, k=i, prob=TRUE)
+      precision <- 100*sum(prueba$type==vecinos)/NROW(prueba)
+      k_actual <- c(k_actual, precision)
+      t=t+1
+    }
+    mejor_k = c(mejor_k, mean(k_actual))
+    i=i+2
+  }
+  return(mejor_k)
+}  
+vectores_precision_knn <- generador()
+
+
+#Devolvemos el mejor k posible
+mejor_k <- which.max(vectores_precision_knn) * 2 + 1
+mejor_k
+
+#Devolvemos la precision del modelo con ese k
+vectores_precision_knn[which.max(vectores_precision_knn)]
+```
+
+Como se puede ver, el caso donde k=31 es el más preciso con un porcentaje de 66.40% de predicción.
+
+Para reforzar esto, usaremos también la matriz de confusión de dicho modelo:
+
+```{r}
+v <- sample(1:nrow(noticias_dataset),0.8*nrow(noticias_dataset))
+entrenamiento <- noticias_dataset[v,]
+prueba <- noticias_dataset[-v,]
+predicciones <- knn(entrenamiento[,c("title_words","title_has_excl","negative")], prueba[,c("title_words","title_has_excl","negative")], entrenamiento$type, k=31, prob=TRUE)
+
+confusion_matrix_knn <- table(Predicción = predicciones, Real = testeo_data$type)
+confusion_matrix_knn
+
+
+```
+
+Ya con esto, podemos ver la utilidad de ambos modelos de clasificación de noticias, es decir, cuan confiables son al aplicarse. Para reforzar esto, sin embargo, probaremos usando ambos modelos con un caso ejemplo. Dicho caso será un artículo con un título de 15 palabras, sin signos de exclamación y cuyas palabras tienen un 6% de connotación negativa. Primero, tendremos que codificar este caso:
+
+```{r}
+ejemplo = data.frame("title_has_excl"=FALSE, "negative"=6.00, "title_words"=15)
+```
+
+Con este ejemplo formado, solo queda usar los modelos ya mencionados para predecir el tipo de noticia que tendría:
+
+```{r}
+a <- knn(noticias_dataset[,c("title_words","title_has_excl","negative")], ejemplo[,c("title_words","title_has_excl","negative")], noticias_dataset$type, k=31, prob=TRUE)
+a
+```
+
+Con el modelo de k-NN, podemos ver que predice que esta noticia ejemplo sería falsa, con una certeza de 61,29%.
+
+Ahora miremos que dice el modelo de arbol de decisión:
+
+```{r}
+predict(fit, ejemplo)
+```
+
+Acá se ve que el modelo de árbol de decisión predice que la noticia será una falsa con el porcentaje mostrado en fake.
+
+Ya con esto, podemos concluir la segunda parte, habiendo visto relaciones entre las tres variables dadas, formando dos tipos de modelos diferentes para la clasificación de noticias y haber puesto a prueba dichos modelos con un ejemplo, donde efectivamente se ve que predicen el mismo resultado, aunque con diferentes certezas.
